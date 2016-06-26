@@ -1,0 +1,101 @@
+# cython: infer_types=True
+# cython: boundscheck=False
+# cython: wraparound=False
+# cython --compile-args=-fopenmp --link-args=-fopenmp --force -a
+
+import numpy as np
+cimport numpy as np
+from libc.math cimport sqrt
+from cython.parallel import prange, parallel
+from wx.lib.pubsub import pub
+
+#### func: calculate Euclidean distance
+cdef euclDistance(vector1, vector2):
+    cdef double distance = np.sqrt(sum(np.power(vector2 - vector1, 2)))
+    return distance
+
+#### func: init centroids randomly
+cdef initCentroids(np.ndarray[np.int64_t, ndim=2] dataSet, int k):
+    # deload vector to elements
+    cdef int numSamples = dataSet.shape[0]
+
+    a = np.zeros((k, 3))
+    a.dtype = "int64"
+    cdef np.ndarray[np.int64_t, ndim=2] centroids = a
+
+    cdef int index
+
+    for i in range(k):
+    # get uniform random number from 0 to numSamples
+        index = int(np.random.uniform(0, numSamples))
+        centroids[i, :] = dataSet[index, :]
+    return centroids
+
+def kmeans(np.ndarray[np.int64_t, ndim=2] dataSet, int k, int stop, pic):
+    # k-means cluster
+    cdef int numSamples = dataSet.shape[0]
+    cdef int dims = dataSet.shape[1]
+    # first column stores which cluster this sample belongs to,
+    # second column stores the error between this sample and its centroid
+    cdef np.ndarray[np.float64_t, ndim=2] clusterAssment = np.mat(np.zeros((numSamples, dims)))
+
+    # step 1: init centroids
+    cdef np.ndarray[np.int64_t, ndim=2] centroids = initCentroids(dataSet, k)
+
+    cdef int n = 0
+    cdef int clusterChanged = 1
+
+    cdef float minDist
+    cdef int minIndex
+
+    cdef float distance = 0.0
+
+    cdef np.ndarray[np.int64_t, ndim=2] pointsInCluster
+    cdef np.ndarray[np.float64_t, ndim=1] centroid_new
+
+    cdef Py_ssize_t i
+    cdef Py_ssize_t j
+    cdef Py_ssize_t h
+
+    while clusterChanged:
+        clusterChanged = 0
+        # for each sample
+        with nogil, parallel(num_threads=8):
+            for i in prange(numSamples, schedule='static'):
+                minDist  = 100000.0
+                minIndex = 0
+                # for each centroid
+                # step 2: find the centroid who is closest
+                for j in range(k):
+                    distance = 0.0
+                    for h in range(dims):
+                        distance = distance + (centroids[j, h] - dataSet[i, h]) * (centroids[j, h] - dataSet[i, h])
+                    distance = sqrt(distance)
+
+                    if distance < minDist:
+                        minDist  = distance
+                        minIndex = j
+
+                # step 3: update its cluster
+                if clusterAssment[i, 0] != minIndex:
+                    clusterAssment[i, 0] = minIndex
+                    clusterAssment[i, 1] = minDist * minDist
+
+        # step 4: update centroids
+        for j in range(k):
+            pointsInCluster = dataSet[np.nonzero(clusterAssment[:, 0].A == j)[0]]
+            centroid_new = np.mean(pointsInCluster, axis = 0)
+
+            print euclDistance(centroids[j, :], centroid_new)
+            if euclDistance(centroids[j, :], centroid_new) > stop:
+                clusterChanged = 1
+                centroids[j, :] = centroid_new
+        if pic == 0:
+            # send messages to redraw the diagram
+            pub.sendMessage("Centriods CHANGED", data=41, extra1 = clusterAssment, extra2 = centroids)
+
+        n = n + 1
+        print n
+
+    print 'Congratulations, cluster complete!'
+    return centroids, clusterAssment.A, n
